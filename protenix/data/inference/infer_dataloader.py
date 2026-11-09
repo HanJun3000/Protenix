@@ -26,6 +26,13 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 from protenix.data.esm.esm_featurizer import ESMFeaturizer
 from protenix.data.inference.json_to_feature import SampleDictToFeatures
+from protenix.data.inference.score_structure import (
+    SCORE_COORDINATE_KEY,
+    SCORE_COORDINATE_MASK_KEY,
+    SCORE_STRUCTURE_INFO_KEY,
+    build_score_coordinates,
+    validate_score_structure,
+)
 from protenix.data.msa.msa_featurizer import InferenceMSAFeaturizer
 from protenix.data.template.template_featurizer import InferenceTemplateFeaturizer
 from protenix.data.template.template_utils import TemplateHitFeaturizer
@@ -82,6 +89,14 @@ class InferenceDataset(Dataset):
         self.use_template = configs.get("use_template", True)
         with open(self.input_json_path, "r") as f:
             self.inputs = json.load(f)
+        # Validate scoring inputs up front, so a bad path or chain list fails
+        # before any featurization work.
+        for index, job in enumerate(self.inputs):
+            if isinstance(job, dict) and "scoreStructure" in job:
+                validate_score_structure(
+                    job,
+                    location=f"scoreStructure for job {job.get('name', index)!r}",
+                )
         json_task_name = os.path.basename(self.input_json_path).split(".")[0]
         if self.use_template:
             template_mmcif_dir = configs.data.template.prot_template_mmcif_dir
@@ -213,10 +228,27 @@ class InferenceDataset(Dataset):
         # Transform to right data type
         feat = data_type_transform(feat_or_label_dict=features_dict)
 
+        # Scoring mode: map the given structure onto the model atoms. The
+        # coordinates travel in the feature dict and replace the diffusion
+        # sample that the confidence head sees.
+        score_structure_info = None
+        if "scoreStructure" in single_sample_dict:
+            score_coordinate, score_mask, score_structure_info = (
+                build_score_coordinates(
+                    single_sample_dict,
+                    atom_array,
+                    kalign_binary_path=self.configs.data.template.kalign_binary_path,
+                )
+            )
+            feat[SCORE_COORDINATE_KEY] = torch.from_numpy(score_coordinate)
+            feat[SCORE_COORDINATE_MASK_KEY] = torch.from_numpy(score_mask)
+
         t2 = time.time()
 
         data = {}
         data["input_feature_dict"] = feat
+        if score_structure_info is not None:
+            data[SCORE_STRUCTURE_INFO_KEY] = score_structure_info
         # Add dimension related items
         N_token = feat["token_index"].shape[0]
         N_atom = feat["atom_to_token_idx"].shape[0]

@@ -34,6 +34,7 @@ from configs.configs_inference import inference_configs
 from configs.configs_model_type import model_configs
 from protenix.config.config import parse_configs, parse_sys_args
 from protenix.data.inference.infer_dataloader import get_inference_dataloader
+from protenix.data.inference.score_structure import SCORE_STRUCTURE_INFO_KEY
 from protenix.model.protenix import Protenix
 from protenix.utils.distributed import DIST_WRAPPER
 from protenix.utils.seed import seed_everything
@@ -591,16 +592,22 @@ def infer_predict(runner: InferenceRunner, configs: Any) -> None:
                 new_configs = update_inference_configs(configs, data["N_token"].item())
                 runner.update_model_configs(new_configs)
                 prediction = runner.predict(data)
-                
-                # Regularize the C-terminal carboxyl oxygens (O / OXT) of each
-                # polymer chain: the O<->OXT substructure-permutation symmetry can
-                # leave one oxygen under-constrained and drift far away. Rebuild
-                # them with an idealized symmetric carboxylate geometry. The
-                # atom_array order matches prediction["coordinate"] 1:1.
-                prediction["coordinate"] = fix_cterminal_carboxyl_oxygens(
-                    prediction["coordinate"], atom_array
-                )
-                
+
+                score_structure_info = data.get(SCORE_STRUCTURE_INFO_KEY)
+                if score_structure_info is None:
+                    # Regularize the C-terminal carboxyl oxygens (O / OXT) of each
+                    # polymer chain: the O<->OXT substructure-permutation symmetry can
+                    # leave one oxygen under-constrained and drift far away. Rebuild
+                    # them with an idealized symmetric carboxylate geometry. The
+                    # atom_array order matches prediction["coordinate"] 1:1.
+                    prediction["coordinate"] = fix_cterminal_carboxyl_oxygens(
+                        prediction["coordinate"], atom_array
+                    )
+                # In scoring mode the C-terminal oxygens are the user's own
+                # coordinates (or were filled in the file's frame by the
+                # overlay), so idealizing them would make the dumped structure
+                # disagree with the structure that was scored.
+
                 runner.dumper.dump(
                     dataset_name="",
                     pdb_id=sample_name,
@@ -612,6 +619,7 @@ def infer_predict(runner: InferenceRunner, configs: Any) -> None:
                         for k, v in data["entity_poly_type"].items()
                         if v != "non-polymer"
                     },
+                    score_structure_info=score_structure_info,
                 )
                 t2_end = time.time()
                 logger.info(

@@ -73,6 +73,7 @@ class DataDumper:
         pred_dict: dict,
         atom_array: AtomArray,
         entity_poly_type: dict[str, str],
+        score_structure_info: Optional[dict] = None,
     ):
         """
         Dump the predictions and related data to the specified directory.
@@ -84,9 +85,18 @@ class DataDumper:
             pred_dict (dict): The dictionary containing the predictions.
             atom_array (AtomArray): The AtomArray object containing the structure data.
             entity_poly_type (dict[str, str]): The entity poly type information.
+            score_structure_info (Optional[dict]): Scoring-mode mapping report,
+                written as `scoring_info.json`. None for a normal prediction.
         """
         dump_dir = self._get_dump_dir(dataset_name, pdb_id, seed)
         Path(dump_dir).mkdir(parents=True, exist_ok=True)
+
+        if score_structure_info is not None:
+            save_json(
+                score_structure_info,
+                os.path.join(dump_dir, "scoring_info.json"),
+                indent=4,
+            )
 
         self.dump_predictions(
             pred_dict=pred_dict,

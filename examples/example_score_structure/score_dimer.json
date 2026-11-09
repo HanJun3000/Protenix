@@ -1,0 +1,26 @@
+[
+    {
+        "name": "score_dimer",
+        "modelSeeds": [101],
+        "sequences": [
+            {
+                "proteinChain": {
+                    "sequence": "GSHMKQLEDKVEELLSKNYHLENEVARLKKLVGER",
+                    "count": 1,
+                    "id": ["A"]
+                }
+            },
+            {
+                "proteinChain": {
+                    "sequence": "GSHMKQLEDKVEELLSKNYHLENEVARLKKLVGER",
+                    "count": 1,
+                    "id": ["B"]
+                }
+            }
+        ],
+        "scoreStructure": {
+            "structurePath": "./examples/example_score_structure/dimer.cif",
+            "chainIds": ["A", "B"]
+        }
+    }
+]

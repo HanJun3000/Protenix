@@ -78,6 +78,23 @@ For a complete list of supported models, please refer to [Supported Models](docs
 
 For detailed instructions on installation, data preprocessing, inference, and training, please refer to the [Training and Inference Instructions](docs/training_inference_instructions.md). We recommend users refer to [inference_demo.sh](inference_demo.sh) for detailed inference methods and input explanations.
 
+#### 🔍 Structure Scoring (fork)
+
+This fork can also score a structure you already have, instead of predicting a
+new one. Add a `scoreStructure` field to a job and the confidence head is
+evaluated on the coordinates from your PDB/mmCIF file, conditioned on the same
+trunk inputs, giving pLDDT / PAE / pTM / ipTM "as if Protenix had predicted
+this structure". Useful for ranking designed complexes or comparing a design
+against an experimental structure.
+
+```bash
+protenix pred -i examples/example_score_structure/score_dimer.json -o ./output \
+  --sample 1 --need_atom_confidence true
+```
+
+Protein chains only. See [scoreStructure](docs/infer_json_format.md#scorestructure)
+for the field format and behaviour.
+
 
 ### 📊 Benchmark
 

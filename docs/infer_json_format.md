@@ -20,12 +20,13 @@ Here is an overview of the JSON file format:
 The JSON file consists of a list of dictionaries, where each dictionary represents a set of sequences you want to model. 
 Even if you are modeling only one set of sequences, the top-level structure should still be a list.
 
-Each dictionary contains the following three keys:
+Each dictionary contains the following keys:
 * `name`: A string representing the name of the inference job.
 * `sequences`: A list of dictionaries that describe the entities (e.g., proteins, DNA, RNA, small molecules, and ions) involved in the inference.
 * `covalent_bonds`: An optional list of dictionaries that define the covalent bonds between atoms from different entities.
+* `scoreStructure`: An optional dictionary that scores a structure you provide instead of predicting one. See [scoreStructure](#scorestructure).
 
-Details of `sequences` and `covalent_bonds` are provided below.
+Details of `sequences`, `covalent_bonds` and `scoreStructure` are provided below.
 
 #### sequences
 There are 5 kinds of supported sequences:
@@ -244,6 +245,71 @@ The position value starts at 1 and can vary based on the type of entity:
   * If the entity is a ligand defined by SMILES or a FILE, atoms can be specified by their atom index. The atom index corresponds to the position of the atom in the file or in the SMILES string, starting from 0. Alternatively, atom names can also be specified using the element symbol followed by its occurrence index in the SMILES or file (e.g., C3, N2), starting from 1.
 
 Deprecation Notice: The previous fields such as old `left_entity`, `right_entity`, and other fields starting with `left`/`right` have been updated to use `1` and `2` to denote the two atoms forming a bond. The current code still supports the old field names, but they may be deprecated in the future, leaving only the new field names. 
+
+#### scoreStructure
+
+Add `scoreStructure` to a job to get Protenix's confidence metrics for *your own*
+coordinates, for example a designed complex or an experimental structure. The
+trunk runs as usual on the job's sequences, MSA and templates, but the
+confidence head sees the coordinates from the file instead of a diffusion
+sample. The output is pLDDT / PAE / pTM / ipTM "as if Protenix had predicted
+this structure".
+
+```json
+[
+  {
+    "name": "score_dimer",
+    "modelSeeds": [101],
+    "sequences": [
+      {"proteinChain": {"sequence": "SEQ_OF_CHAIN_A", "count": 1}},
+      {"proteinChain": {"sequence": "SEQ_OF_CHAIN_B", "count": 1}}
+    ],
+    "scoreStructure": {
+      "structurePath": "/absolute/path/to/dimer.cif",
+      "chainIds": ["A", "B"]
+    }
+  }
+]
+```
+
+| Field | Required | Meaning |
+| --- | :---: | --- |
+| `structurePath` | Yes | A `.cif`, `.mmcif`, `.pdb` or `.ent` file, optionally gzipped (`.gz`). **Absolute paths are recommended.** |
+| `chainIds` | No | Author chain IDs in the file, one per model chain, in model chain order (entities in JSON order, then copies). Defaults to the file's protein chains in file order. |
+
+Behaviour:
+
+* Only protein chains are supported. A job that also contains DNA, RNA,
+  ligands, ions or `modifications` is rejected with an error rather than scored
+  incorrectly.
+* The sequences come from this JSON, not from the file; the file supplies only
+  coordinates. Each file chain is mapped onto its model chain by identical
+  sequence, then unique substring (e.g. a truncated structure), then pairwise
+  alignment. Mapped residues of the same type contribute all their heavy atoms;
+  mapped residues of a different type contribute backbone atoms (`N`, `CA`,
+  `C`, `O`) only. Hydrogens, waters and non-amino-acid residues are ignored,
+  the first alternate location of each atom is used, and `MSE` is read as `MET`
+  (`SE` → `SD`). The log reports the mapped residues and atoms per chain.
+* If the file contains every model atom, the diffusion sampler is skipped
+  entirely, which makes scoring considerably cheaper than prediction.
+  Otherwise a diffusion sample is superposed onto the given atoms and supplies
+  only the missing ones (for example `OXT`, or unresolved side chains).
+* MC dropout is disabled for scored jobs, so scores are reproducible for a
+  fixed seed. A normal prediction is unaffected.
+* Outputs use the normal layout. The structure files hold the given
+  coordinates (plus any filled atoms) with pLDDT in the B-factor column, and
+  the summary JSON holds `plddt`, `ptm`, `iptm`, `chain_pair_iptm`,
+  `has_clash`, `ranking_score` and the rest for them. The C-terminal carboxyl
+  oxygen regularization that normal predictions get is skipped, so the output
+  structure matches the structure that was scored.
+* An extra `scoring_info.json` is written next to the predictions, recording
+  the input path, the chain mapping, the mapped and identical residue counts
+  per chain, the atom coverage, and whether diffusion was skipped.
+* Use `--sample 1`: with full coverage every sample is identical, and with
+  partial coverage the samples differ only in the filled-in atoms. Add
+  `--need_atom_confidence true` for per-atom pLDDT and the full PAE matrix.
+* Scores depend on the job's other inputs, so only compare structures scored
+  with the same MSA, template and seed settings.
 
 Here is a revised user guide compatible with **Version 2** of the `constraint` format for the Complex Structure Predictor:
 

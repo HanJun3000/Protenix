@@ -22,6 +22,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from protenix.data.inference.score_structure import (
+    expand_score_coordinates,
+    overlay_score_coordinates,
+    pop_score_coordinates,
+)
 from protenix.model import sample_confidence
 from protenix.model.generator import (
     InferenceNoiseScheduler,
@@ -500,6 +505,25 @@ class Protenix(nn.Module):
         pred_dict = {}
         time_tracker = {}
 
+        # Scoring mode (scoreStructure): the given coordinates bypass the trunk
+        # and replace the diffusion sample that the confidence head sees.
+        (
+            input_feature_dict,
+            score_coordinate,
+            score_mask,
+            skip_diffusion,
+        ) = pop_score_coordinates(input_feature_dict)
+        if score_coordinate is not None and mc_dropout:
+            # Scoring must be reproducible. MC dropout on the recycling pair
+            # update is active even in eval mode (F.dropout is called without
+            # training=self.training) and fires with probability
+            # configs.mc_dropout_apply_rate, 0.4 by default.
+            logger.info(
+                "scoreStructure: disabling MC dropout so that scores are "
+                "reproducible for a fixed seed."
+            )
+            mc_dropout = False
+
         s_inputs, s, z = self.get_pairformer_output(
             input_feature_dict=input_feature_dict,
             N_cycle=N_cycle,
@@ -533,46 +557,67 @@ class Protenix(nn.Module):
             N_step=N_step, device=s_inputs.device, dtype=s_inputs.dtype
         )
         cache = dict()
-        if self.enable_diffusion_shared_vars_cache:
-            # line 1-5 of algorithm 21 calculate z in diffusion conditioning
-            cache["pair_z"] = autocasting_disable_decorator(
-                self.configs.skip_amp.sample_diffusion
-            )(self.diffusion_module.diffusion_conditioning.prepare_cache)(
-                input_feature_dict["relp"], z, False
+        if skip_diffusion:
+            # The file covers every model atom, so no diffusion sample is
+            # needed, and neither is the (expensive) shared-variables cache.
+            guidance_configs = (
+                self.configs.sample_diffusion.to_dict().get("guidance") or {}
             )
-            cache["p_lm/c_l"] = autocasting_disable_decorator(
-                self.configs.skip_amp.sample_diffusion
-            )(self.diffusion_module.atom_attention_encoder.prepare_cache)(
-                ref_pos=input_feature_dict["ref_pos"],
-                ref_charge=input_feature_dict["ref_charge"],
-                ref_mask=input_feature_dict["ref_mask"],
-                ref_element=input_feature_dict["ref_element"],
-                ref_atom_name_chars=input_feature_dict["ref_atom_name_chars"],
-                atom_to_token_idx=input_feature_dict["atom_to_token_idx"],
-                d_lm=input_feature_dict["d_lm"],
-                v_lm=input_feature_dict["v_lm"],
-                pad_info=input_feature_dict["pad_info"],
-                r_l=True,
-                z=cache["pair_z"],
-                inplace_safe=False,
+            if guidance_configs.get("enable"):
+                logger.warning(
+                    "scoreStructure: the given structure covers every model "
+                    "atom, so diffusion and therefore TFG guidance are skipped."
+                )
+            pred_dict["coordinate"] = expand_score_coordinates(
+                score_coordinate, N_sample
             )
         else:
-            cache["pair_z"] = None
-            cache["p_lm/c_l"] = [None, None]
-        pred_dict["coordinate"] = self.sample_diffusion(
-            denoise_net=self.diffusion_module,
-            input_feature_dict=input_feature_dict,
-            s_inputs=s_inputs,
-            s_trunk=s,
-            z_trunk=None if cache["pair_z"] is not None else z,
-            pair_z=cache["pair_z"],
-            p_lm=cache["p_lm/c_l"][0],
-            c_l=cache["p_lm/c_l"][1],
-            N_sample=N_sample,
-            noise_schedule=noise_schedule,
-            inplace_safe=inplace_safe,
-            enable_efficient_fusion=self.enable_efficient_fusion,
-        )
+            if self.enable_diffusion_shared_vars_cache:
+                # line 1-5 of algorithm 21 calculate z in diffusion conditioning
+                cache["pair_z"] = autocasting_disable_decorator(
+                    self.configs.skip_amp.sample_diffusion
+                )(self.diffusion_module.diffusion_conditioning.prepare_cache)(
+                    input_feature_dict["relp"], z, False
+                )
+                cache["p_lm/c_l"] = autocasting_disable_decorator(
+                    self.configs.skip_amp.sample_diffusion
+                )(self.diffusion_module.atom_attention_encoder.prepare_cache)(
+                    ref_pos=input_feature_dict["ref_pos"],
+                    ref_charge=input_feature_dict["ref_charge"],
+                    ref_mask=input_feature_dict["ref_mask"],
+                    ref_element=input_feature_dict["ref_element"],
+                    ref_atom_name_chars=input_feature_dict["ref_atom_name_chars"],
+                    atom_to_token_idx=input_feature_dict["atom_to_token_idx"],
+                    d_lm=input_feature_dict["d_lm"],
+                    v_lm=input_feature_dict["v_lm"],
+                    pad_info=input_feature_dict["pad_info"],
+                    r_l=True,
+                    z=cache["pair_z"],
+                    inplace_safe=False,
+                )
+            else:
+                cache["pair_z"] = None
+                cache["p_lm/c_l"] = [None, None]
+            pred_dict["coordinate"] = self.sample_diffusion(
+                denoise_net=self.diffusion_module,
+                input_feature_dict=input_feature_dict,
+                s_inputs=s_inputs,
+                s_trunk=s,
+                z_trunk=None if cache["pair_z"] is not None else z,
+                pair_z=cache["pair_z"],
+                p_lm=cache["p_lm/c_l"][0],
+                c_l=cache["p_lm/c_l"][1],
+                N_sample=N_sample,
+                noise_schedule=noise_schedule,
+                inplace_safe=inplace_safe,
+                enable_efficient_fusion=self.enable_efficient_fusion,
+            )
+            if score_coordinate is not None:
+                # Partial coverage: superpose each sample onto the given atoms
+                # and keep only its filled-in atoms.
+                pred_dict["coordinate"] = overlay_score_coordinates(
+                    pred_dict["coordinate"], score_coordinate, score_mask
+                )
 
         step_diffusion = time.time()
         time_tracker.update({"diffusion": step_diffusion - step_trunk})
